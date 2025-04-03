@@ -140,6 +140,9 @@ jobs:
           CIBW_ARCHS: "x86_64"
       - name: Build wheels for CPython
         if: matrix.os == 'windows-2022'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
         shell: bash
         run: |
           python3 -m cibuildwheel --output-dir dist
