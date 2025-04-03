@@ -58,7 +58,7 @@ environment = {"CMAKE_ARGS"="-DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 -DCMAKE_C_COMPI
 [tool.cibuildwheel.windows]
 environment = {"CMAKE_GENERATOR"="Visual Studio 17 2022"}
 before-build = [
-"if not exist \"vcpkg\" git clone --branch 2024.08.23 https://github.com/microsoft/vcpkg.git",
+"if not exist \"vcpkg\" git clone --branch 2025.03.19 https://github.com/microsoft/vcpkg.git",
 "cd vcpkg",
 "findstr /c:\"set(VCPKG_BUILD_TYPE release)\" triplets\\x64-windows-static.cmake || echo set(VCPKG_BUILD_TYPE release) >> triplets\\x64-windows-static.cmake",
 "bootstrap-vcpkg.bat -disableMetrics",
