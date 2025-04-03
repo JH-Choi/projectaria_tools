@@ -143,9 +143,6 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: bash
         run: |
-          python --version
-          python3 --version
-          ${{ steps.setup-python.outputs.python-path }} --version
           python -m cibuildwheel --output-dir dist
         env:
           CIBW_BUILD_VERBOSITY: 3

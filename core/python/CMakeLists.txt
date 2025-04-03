@@ -19,8 +19,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/pybind/pybind11.git
     GIT_TAG master
 )
-set(PYBIND11_PYTHON_VERSION 3)
-set(PYBIND11_FINDPYTHON ON)
+set(PYBIND11_FINDPYTHON OFF)
 FetchContent_MakeAvailable(pybind11)
 
 add_subdirectory(${pybind11_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pybind)
