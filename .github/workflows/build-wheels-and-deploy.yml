@@ -111,6 +111,7 @@ jobs:
           name: projectaria_tools_stubs
           path: projectaria_tools
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -142,6 +143,9 @@ jobs:
         if: matrix.os == 'windows-2022'
         shell: bash
         run: |
+          python --version
+          python3 --version
+          ${{ steps.setup-python.outputs.python-path }} --version
           python -m cibuildwheel --output-dir dist
         env:
           CIBW_BUILD_VERBOSITY: 3
