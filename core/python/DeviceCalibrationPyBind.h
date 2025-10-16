@@ -747,9 +747,17 @@ inline void declareDeviceCalibration(py::module& m) {
           &DeviceCalibration::getBarometerLabels,
           "returns all labels for barometers.")
       .def(
+          "get_audio_labels",
+          &DeviceCalibration::getAudioLabels,
+          "returns all labels for calibrated audio sensors, including microphones and speakers.")
+      .def(
           "get_microphone_labels",
           &DeviceCalibration::getMicrophoneLabels,
-          "returns all labels for microphones.")
+          "returns all labels for calibrated microphones.")
+      .def(
+          "get_speaker_labels",
+          &DeviceCalibration::getSpeakerLabels,
+          "returns all labels for calibrated speakers.")
       .def(
           "get_sensor_calib",
           &DeviceCalibration::getSensorCalib,
@@ -925,6 +933,41 @@ void declareDistortByCalibration(py::module& m) {
       py::arg("srcCalib"),
       py::arg("method") = image::InterpolationMethod::Bilinear,
       "Distorts an input image to swap its underlying image distortion model.");
+
+  m.def(
+      "distort_by_calibration_and_apply_rotation",
+      [](py::array_t<T> arraySrc,
+         const CameraCalibration& dstCalib,
+         const CameraCalibration& srcCalib,
+         const Sophus::SO3d& so3_srcCalib_dstCalib,
+         const image::InterpolationMethod method) {
+        py::buffer_info info = arraySrc.request();
+
+        size_t imageWidth = arraySrc.shape()[1];
+        size_t imageHeight = arraySrc.shape()[0];
+        bool isRgb = arraySrc.ndim() == 3 && arraySrc.shape()[2] == 3;
+        constexpr int MaxVal = image::DefaultImageValTraits<T>::maxValue;
+
+        if (!isRgb) {
+          image::Image<T, MaxVal> imageSrc((T*)info.ptr, imageWidth, imageHeight);
+          return image::toPyArrayVariant(distortByCalibrationAndApplyRotation(
+              image::ImageVariant{imageSrc}, dstCalib, srcCalib, so3_srcCalib_dstCalib, method));
+        } else {
+          if constexpr (std::is_same<T, uint8_t>::value) {
+            image::Image3U8 imageSrc((Eigen::Vector3<T>*)info.ptr, imageWidth, imageHeight);
+            return image::toPyArrayVariant(distortByCalibrationAndApplyRotation(
+                image::ImageVariant{imageSrc}, dstCalib, srcCalib, so3_srcCalib_dstCalib, method));
+          } else {
+            throw std::runtime_error("Type is not uint8_t but has 3 channels.");
+          }
+        }
+      },
+      py::arg("arraySrc"),
+      py::arg("dstCalib"),
+      py::arg("srcCalib"),
+      py::arg("so3_srcCalib_dstCalib"),
+      py::arg("method") = image::InterpolationMethod::Bilinear,
+      "Distorts an input image to swap its underlying image distortion model, while applying a rotation to the camera ray. This can be used for stereo rectification.");
 
   m.def(
       "distort_depth_by_calibration",

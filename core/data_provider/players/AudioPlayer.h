@@ -20,6 +20,9 @@
 #include <vrs/RecordFormatStreamPlayer.h>
 #include <Eigen/Core>
 
+// Forward declare Opus types to avoid including opus headers in header
+struct OpusMSDecoder;
+
 namespace projectaria::tools::data_provider {
 
 /**
@@ -102,11 +105,24 @@ class AudioPlayer : public vrs::RecordFormatStreamPlayer {
     verbose_ = verbose;
   }
 
+  // Get the detected audio format (available after first read)
+  vrs::AudioFormat getDetectedAudioFormat() const {
+    return detectedAudioFormat_;
+  }
+
+  // A function to explicitly reset the Opus decoder. Note that this DOES NOT initialize the
+  // decoder!
+  void resetOpusDecoder();
+
  protected:
   bool onDataLayoutRead(const vrs::CurrentRecord& r, size_t blockIndex, vrs::DataLayout& dl)
       override;
   bool onAudioRead(const vrs::CurrentRecord& r, size_t blockIdx, const vrs::ContentBlock& cb)
       override;
+
+ public:
+  // Add destructor to clean up Opus decoder
+  ~AudioPlayer() override;
 
  private:
   bool readAndDecodeAudioData(const vrs::CurrentRecord& r, const vrs::ContentBlock& cb);
@@ -121,6 +137,14 @@ class AudioPlayer : public vrs::RecordFormatStreamPlayer {
 
   double nextTimestampSec_ = 0;
   bool verbose_ = false;
+
+  // Persistent Opus decoder state (similar to AudioDecompressionHandler)
+  OpusMSDecoder* opusDecoder_ = nullptr;
+  vrs::AudioContentBlockSpec lastDecoderSpec_; // Track spec compatibility
+  double lastDecodedTimestamp_ = -1.0; // Track last decoded timestamp for random access detection
+
+  // Track detected audio format (set on first audio read)
+  vrs::AudioFormat detectedAudioFormat_ = vrs::AudioFormat::UNDEFINED;
 };
 
 } // namespace projectaria::tools::data_provider

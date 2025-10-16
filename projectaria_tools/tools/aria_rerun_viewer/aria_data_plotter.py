@@ -58,6 +58,7 @@ class SensorLabels:
     magnetometer_label: str
     barometer_labels: List[str]
     microphone_label: str
+    contact_microphone_label: str
     gps_label: str
 
     # Machine perception data labels (Gen2 only)
@@ -103,6 +104,7 @@ class SensorLabels:
                     "slam-side-right",
                 ],
                 eye_tracking_camera_labels=["camera-et-left", "camera-et-right"],
+                contact_microphone_label="contact_mic",
                 **common_labels,
                 **gen2_mp_labels,
             )
@@ -138,6 +140,8 @@ class AriaDataViewerConfig:
     # Set this value between 1 (lowest quality, smallest file size) and 100 (highest quality, largest file size).
     # Used by rr.Image(...).compress(jpeg_quality=jpeg_quality) to control the trade-off between image quality and storage/bandwidth.
     jpeg_quality = 50
+
+    enable_gps = False
 
 
 class AriaDataViewer:
@@ -208,11 +212,16 @@ class AriaDataViewer:
         self,
         config: AriaDataViewerConfig = None,
         device_calibration: DeviceCalibration = None,
+        rrd_output_path: str = "",
     ):
         """
         Initialization - supports both streaming and recording modes
         """
-        rr.init("AriaDataViewer", spawn=True)
+        if rrd_output_path:
+            rr.init("AriaDataViewer", spawn=False)
+            rr.save(rrd_output_path)
+        else:
+            rr.init("AriaDataViewer", spawn=True)
 
         self.config = config if config is not None else AriaDataViewerConfig()
         # A variable to cache full VIO high frequency trajectory
@@ -237,6 +246,9 @@ class AriaDataViewer:
             print(
                 "Warning: device_calibration is None. Cannot create rerun blueprint during initialization."
             )
+
+    def set_viewer_config(self, config: AriaDataViewerConfig):
+        self.config = config
 
     def set_slam_to_rgb_plotting_ratio(self):
         """Calculate and set the scale ratio for converting plot sizes from RGB camera space to SLAM camera space.
@@ -310,13 +322,13 @@ class AriaDataViewer:
         )
 
         # Create 2D grid view with SLAM cameras, eye tracking cameras, and GPS
-        blueprint_2d_view = rrb.Grid(
-            contents=[
-                rrb.Spatial2DView(name=label, origin=label)
-                for label in self.sensor_labels.slam_labels
-                + self.sensor_labels.eye_tracking_camera_labels
-            ]
-            + [  # GPS map view
+        contents = [
+            rrb.Spatial2DView(name=label, origin=label)
+            for label in self.sensor_labels.slam_labels
+            + self.sensor_labels.eye_tracking_camera_labels
+        ]
+        if self.config.enable_gps:
+            contents = contents + [  # GPS map view
                 rrb.MapView(
                     name=self.sensor_labels.gps_label,
                     origin=self.sensor_labels.gps_label,
@@ -324,7 +336,7 @@ class AriaDataViewer:
                     background=rrb.MapProvider.OpenStreetMap,
                 )
             ]
-        )
+        blueprint_2d_view = rrb.Grid(contents=contents)
 
         # Create all 1D views (IMU, audio, and tabbed views)
         # IMU 1D view
@@ -347,20 +359,26 @@ class AriaDataViewer:
             ],
         )
 
-        blueprint_1d_view = rrb.Vertical(imu_1d_view, audio_1d_view, tabbed_1d_view)
+        blueprint_1d_view = rrb.Vertical(
+            imu_1d_view,
+            audio_1d_view,
+            tabbed_1d_view,
+        )
 
         # Gen1-specific 3D view layout (simple vertical layout)
         blueprint_3d_view = rrb.Vertical(
             blueprint_rgb_view, blueprint_device_extrinsics_view
         )
 
-        # Create final horizontal blueprint layout
+        # Create final horizontal blueprint layout.
+        # hide left&right, with compact timeline on bottom
         return rrb.Blueprint(
             rrb.Horizontal(
                 blueprint_3d_view,
                 blueprint_2d_view,
                 blueprint_1d_view,
             ),
+            collapse_panels=True,
         )
 
     def _create_gen2_rerun_blueprint(self):
@@ -372,23 +390,41 @@ class AriaDataViewer:
         _2d_view_container = template_blueprint_container.contents[1]
         _1d_view_container = template_blueprint_container.contents[2]
 
-        # Just update the 3D view
-        updated__3d_view_container = rrb.Vertical(
+        # Update the 3D view
+        updated_3d_view_container = rrb.Vertical(
             _3d_view_container.contents[0],  # RGB view
             rrb.Tabs(
                 contents=[
                     rrb.Spatial3DView(
-                        origin="world", name="3D Scene"
+                        origin="world",
+                        name="3D Scene",
+                        line_grid=rrb.archetypes.LineGrid3D(
+                            visible=False,
+                        ),
                     ),  # Gen2-added world 3D view
                     _3d_view_container.contents[1],  # Device extrinsics
                 ]
             ),
         )
 
+        # Update the 1D view to add contact mic
+        contact_mic_1d_view = rrb.TimeSeriesView(
+            origin=self.sensor_labels.contact_microphone_label
+        )
+        updated_1d_view_container = rrb.Vertical(
+            _1d_view_container.contents[0],  # IMU plots
+            _1d_view_container.contents[1],  # mic
+            contact_mic_1d_view,  # contact mic
+            _1d_view_container.contents[2],  # Tabbed baro + mag
+        )
+
+        # Create final horizontal blueprint layout.
+        # hide left&right, with compact timeline on bottom
         return rrb.Blueprint(
             rrb.Horizontal(
-                updated__3d_view_container, _2d_view_container, _1d_view_container
-            )
+                updated_3d_view_container, _2d_view_container, updated_1d_view_container
+            ),
+            collapse_panels=True,
         )
 
     def update_rerun_blueprint(self):
@@ -574,6 +610,63 @@ class AriaDataViewer:
             rr.Image(frame).compress(self.config.jpeg_quality),
         )
 
+    def plot_imu_batch_vectorized(self, imu_data_list, label):
+        """Plot multiple IMU sensor data points with maximum efficiency using bulk logging."""
+        if not imu_data_list:
+            return
+
+        # Filter valid data and extract arrays efficiently
+        valid_data = [
+            d
+            for d in imu_data_list
+            if d is not None and hasattr(d, "accel_msec2") and hasattr(d, "gyro_radsec")
+        ]
+
+        if not valid_data:
+            return
+
+        # Extract timestamps and data as numpy arrays for bulk operations
+        timestamps = np.array(
+            [d.capture_timestamp_ns for d in valid_data], dtype=np.int64
+        )
+        accel_data = np.array([d.accel_msec2 for d in valid_data])  # Shape: (N, 3)
+        gyro_data = np.array([d.gyro_radsec for d in valid_data])  # Shape: (N, 3)
+
+        # Use bulk logging with send_columns - same pattern as audio logging
+        # Log accelerometer data
+        rr.send_columns(
+            f"{label}/accl/x[m-sec2]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(accel_data[:, 0])],
+        )
+        rr.send_columns(
+            f"{label}/accl/y[m-sec2]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(accel_data[:, 1])],
+        )
+        rr.send_columns(
+            f"{label}/accl/z[m-sec2]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(accel_data[:, 2])],
+        )
+
+        # Log gyroscope data
+        rr.send_columns(
+            f"{label}/gyro/x[rad-sec]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(gyro_data[:, 0])],
+        )
+        rr.send_columns(
+            f"{label}/gyro/y[rad-sec]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(gyro_data[:, 1])],
+        )
+        rr.send_columns(
+            f"{label}/gyro/z[rad-sec]",
+            indexes=[rr.TimeNanosColumn("device_time", timestamps)],
+            columns=[rr.components.ScalarBatch(gyro_data[:, 2])],
+        )
+
     def plot_imu(self, imu_data, label):
         """Plot IMU sensor data."""
         if imu_data is None:
@@ -590,12 +683,12 @@ class AriaDataViewer:
             )
             return
         rr.set_time_nanos("device_time", imu_data.capture_timestamp_ns)
-        rr.log(f"{label}/accl/x[m/sec2]", rr.Scalar(imu_data.accel_msec2[0]))
-        rr.log(f"{label}/accl/y[m/sec2]", rr.Scalar(imu_data.accel_msec2[1]))
-        rr.log(f"{label}/accl/z[m/sec2]", rr.Scalar(imu_data.accel_msec2[2]))
-        rr.log(f"{label}/gyro/x[rad/sec2]", rr.Scalar(imu_data.gyro_radsec[0]))
-        rr.log(f"{label}/gyro/y[rad/sec2]", rr.Scalar(imu_data.gyro_radsec[1]))
-        rr.log(f"{label}/gyro/z[rad/sec2]", rr.Scalar(imu_data.gyro_radsec[2]))
+        rr.log(f"{label}/accl/x[m-sec2]", rr.Scalar(imu_data.accel_msec2[0]))
+        rr.log(f"{label}/accl/y[m-sec2]", rr.Scalar(imu_data.accel_msec2[1]))
+        rr.log(f"{label}/accl/z[m-sec2]", rr.Scalar(imu_data.accel_msec2[2]))
+        rr.log(f"{label}/gyro/x[rad-sec]", rr.Scalar(imu_data.gyro_radsec[0]))
+        rr.log(f"{label}/gyro/y[rad-sec]", rr.Scalar(imu_data.gyro_radsec[1]))
+        rr.log(f"{label}/gyro/z[rad-sec]", rr.Scalar(imu_data.gyro_radsec[2]))
 
     def plot_magnetometer(self, magnetometer_data):
         """Plot magnetometer sensor data."""
@@ -656,8 +749,62 @@ class AriaDataViewer:
             rr.Scalar(barometer_data.temperature),
         )  # Degree Celsius
 
+    def _plot_audio_from_selected_channels(
+        self,
+        audio_data_and_record,
+        total_num_audio_channels,
+        selected_channel_indices,
+        selected_channel_labels,
+        rerun_plotter_label,
+    ):
+        """Implementation: plot audio sensor data from selected channels."""
+        audio_data = audio_data_and_record[0].data
+        audio_data_timestamp = audio_data_and_record[1].capture_timestamps_ns
+
+        if audio_data is None or audio_data_timestamp is None:
+            warn_once(
+                self._plot_audio_from_selected_channels,
+                "Audio data or timestamp is None",
+            )
+            return
+
+        # Reshape audio data into [num_channels, num_samples]
+        all_audio_vectors = (
+            np.array_split(audio_data, total_num_audio_channels)
+            / np.finfo(np.float32).max
+        )
+
+        # Filter to only selected channels
+        sampled_vectors = [
+            all_audio_vectors[i]
+            for i in selected_channel_indices
+            if i < len(all_audio_vectors)
+        ]
+
+        for c in range(0, len(sampled_vectors)):
+            rr.send_columns(
+                f"{rerun_plotter_label}/{selected_channel_labels[c]}",
+                indexes=[
+                    rr.TimeNanosColumn(
+                        "device_time",
+                        audio_data_timestamp[:: self.config.audio_subsample_rate],
+                    )
+                ],
+                columns=[
+                    rr.components.ScalarBatch(
+                        sampled_vectors[c][:: self.config.audio_subsample_rate]
+                    )
+                ],
+            )
+
     def plot_audio(self, audio_data_and_record, num_audio_channels):
-        """Plot audio sensor data."""
+        """
+        Plot audio sensor data, where non-contact mic is plotted in one plot,
+        and contact mic is plotted in a separate plot.
+        """
+        # -------
+        # Sanity checks on data size
+        # -------
         if audio_data_and_record is None or len(audio_data_and_record) < 2:
             warn_once(
                 self.plot_audio,
@@ -672,33 +819,31 @@ class AriaDataViewer:
             )
             return
 
-        audio_data = audio_data_and_record[0].data
-        audio_data_timestamp = audio_data_and_record[1].capture_timestamps_ns
-
-        if audio_data is None or audio_data_timestamp is None:
-            warn_once(
-                self.plot_audio,
-                "Audio data or timestamp is None",
-            )
-            return
-
-        sampled_vectors = (
-            np.array_split(audio_data, num_audio_channels) / np.finfo(np.float32).max
+        # -------
+        # Plot for non-contact mics. Note that device calibration only contains non-contact mics
+        # -------
+        non_contact_mic_labels = self.device_calibration.get_microphone_labels()
+        non_contact_mic_indices = list(range(len(non_contact_mic_labels)))
+        self._plot_audio_from_selected_channels(
+            audio_data_and_record=audio_data_and_record,
+            total_num_audio_channels=num_audio_channels,
+            selected_channel_indices=non_contact_mic_indices,
+            selected_channel_labels=non_contact_mic_labels,
+            rerun_plotter_label=self.sensor_labels.microphone_label,
         )
-        for c in range(0, len(sampled_vectors)):
-            rr.send_columns(
-                f"{self.sensor_labels.microphone_label}/mic-{c}",
-                indexes=[
-                    rr.TimeNanosColumn(
-                        "device_time",
-                        audio_data_timestamp[:: self.config.audio_subsample_rate],
-                    )
-                ],
-                columns=[
-                    rr.components.ScalarBatch(
-                        sampled_vectors[c][:: self.config.audio_subsample_rate]
-                    )
-                ],
+
+        # --------
+        # Gen2 only: Plot for contact mic , which is the last audio channel
+        # --------
+        if self.device_calibration.get_device_version() == DeviceVersion.Gen2:
+            contact_mic_index = num_audio_channels - 1
+            contact_mic_label = self.sensor_labels.contact_microphone_label
+            self._plot_audio_from_selected_channels(
+                audio_data_and_record=audio_data_and_record,
+                total_num_audio_channels=num_audio_channels,
+                selected_channel_indices=[contact_mic_index],
+                selected_channel_labels=[contact_mic_label],
+                rerun_plotter_label=contact_mic_label,
             )
 
     def plot_gps(self, gps_data):
@@ -724,7 +869,9 @@ class AriaDataViewer:
         rr.set_time_nanos("device_time", gps_data.capture_timestamp_ns)
         # gps_data.provider is a string that can be "APP" or "GPS", indicating data source.
         gps_settings = self.PLOT_COLORS_AND_SIZES_2D[
-            "gps_sensor" if gps_data.provider != "APP" else "gps_app"
+            "gps_app"
+            if (gps_data.provider == "APP" or gps_data.provider == "app")
+            else "gps_sensor"
         ]
 
         rr.log(

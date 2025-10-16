@@ -45,6 +45,7 @@ ALL_STREAM_LABELS_GEN2 = [
     "baro0",
     "mag0",
     "gps",
+    "gps-app",
     "handtracking",
     "eyegaze",
     "vio",
@@ -61,7 +62,11 @@ ALL_STREAM_LABELS_GEN1 = [
     "baro0",
     "mag0",
     "gps",
+    "gps-app",
 ]
+
+# Max number of IMU samples to batch together for plotting
+MAX_IMU_BATCH_SIZE = 500
 
 
 def parse_subsample_rates(subsampling_args: List[str], enabled_streams: List[str]):
@@ -117,6 +122,12 @@ def parse_args():
         nargs="+",
         help="Specify subsampling rates for streams in the format `stream=rate`, e.g. `camera-rgb=2`,"
         "Use space-separated pairs. (default: vio_high_frequency=10 to bring down rate from 800Hz to 80Hz)",
+    )
+    parser.add_argument(
+        "--rrd-output-path",
+        type=str,
+        default="",
+        help="path to save .rrd file (if not provided, will spawn viewer window)",
     )
     return parser.parse_args()
 
@@ -211,6 +222,12 @@ def plot_queued_sensor_data(vrs_data_provider, deliver_options, aria_data_viewer
     """
     hand_pose_stream_id = vrs_data_provider.get_stream_id_from_label("handtracking")
 
+    # Per-IMU batched data for IMU data
+    batched_imu_data_list = {
+        imu_label: []
+        for imu_label in vrs_data_provider.get_device_calibration().get_imu_labels()
+    }
+
     # Loop over queued sensor data
     for data in tqdm(vrs_data_provider.deliver_queued_sensor_data(deliver_options)):
         device_time_ns = data.get_time_ns(TimeDomain.DEVICE_TIME)
@@ -251,8 +268,17 @@ def plot_queued_sensor_data(vrs_data_provider, deliver_options, aria_data_viewer
 
         elif data.sensor_data_type() == SensorDataType.GPS:
             aria_data_viewer.plot_gps(data.gps_data())
+
+        # For IMU plotting, only send batched IMU data
         elif data.sensor_data_type() == SensorDataType.IMU:
-            aria_data_viewer.plot_imu(data.imu_data(), label)
+            batched_imu_data_list[label].append(data.imu_data())
+
+            if len(batched_imu_data_list[label]) >= MAX_IMU_BATCH_SIZE:
+                aria_data_viewer.plot_imu_batch_vectorized(
+                    batched_imu_data_list[label], label
+                )
+                # Reset batched IMU data list
+                batched_imu_data_list[label] = []
         elif data.sensor_data_type() == SensorDataType.MAGNETOMETER:
             aria_data_viewer.plot_magnetometer(data.magnetometer_data())
         elif data.sensor_data_type() == SensorDataType.BAROMETER:
@@ -294,6 +320,7 @@ def main():
 
     # Step 3: Create config
     viewer_config = AriaDataViewerConfig()
+    viewer_config.enable_gps = True
 
     # Step 4: Get configured deliver options
     parsed_subsample_rates = (
@@ -312,7 +339,9 @@ def main():
 
     # Step 6: Initialize AriaDataViewer
     aria_data_viewer = AriaDataViewer(
-        config=viewer_config, device_calibration=device_calibration
+        config=viewer_config,
+        device_calibration=device_calibration,
+        rrd_output_path=args.rrd_output_path,
     )
     aria_data_viewer.plot_device_extrinsics()
 

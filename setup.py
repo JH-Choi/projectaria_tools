@@ -159,7 +159,7 @@ def main():
         install_requires=[
             "numpy",
             "requests",  # Required for datasets downloader
-            "rerun-sdk>=0.20.0",
+            "rerun-sdk==0.22.1",
             "tqdm",
         ],
         extras_require={
@@ -171,6 +171,7 @@ def main():
                 "pillow",
                 "plotly",
                 "scipy",
+                "rerun-notebook==0.22.1",
                 ## Required for vrs_to_mp4
                 "moviepy==1.0.3",
             ]
@@ -179,7 +180,6 @@ def main():
             "console_scripts": [
                 "aria_dataset_downloader = projectaria_tools.tools.dataset_downloader.dataset_downloader_main:main",
                 "dtc_object_downloader = projectaria_tools.projects.dtc_objects.downloader_main:main",
-                "aria_mps = projectaria_tools.aria_mps_cli.cli:main",
                 "aria_rerun_viewer = projectaria_tools.tools.aria_rerun_viewer.aria_rerun_viewer:main",
                 "viewer_mps = projectaria_tools.tools.viewer_mps.viewer_mps:main",
                 "viewer_projects_adt = projectaria_tools.utils.viewer_projects_adt:main",
