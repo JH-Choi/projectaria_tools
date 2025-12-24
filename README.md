@@ -55,3 +55,23 @@ for how to get started.
 
 Project Aria Tools are released by Meta under the
 [Apache 2.0 license](https://github.com/facebookresearch/projectaria_tools/blob/main/LICENSE).
+
+
+
+## DK project
+
+#### step 1 : download data
+
+- sh download_adt.sh
+
+#### step 2 : extracted from vrs
+
+- sh dk_extract_data.sh
+
+#### step 3 : make image and depth pairs
+
+- python dk_save_img_dep.py
+
+#### step 4 : save transforms json
+
+- python dk_save_transforms.py
